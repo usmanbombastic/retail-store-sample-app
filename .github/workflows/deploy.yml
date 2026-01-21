@@ -3,7 +3,7 @@ name: Deploy Pipeline
 on:
   push:
     branches:
-      - [gitops]
+      - gitops
     paths:
       - 'src/**'
   pull_request:
@@ -181,4 +181,5 @@ jobs:
         run: |
           echo "::notice title=Deployment Complete::Service '${{ matrix.name }}' deployed with image tag '${{ steps.generate-tag.outputs.image_tag }}'"
           echo "ECR Image: ${{ steps.login-ecr.outputs.registry }}/${{ matrix.ecr_repository }}:${{ steps.generate-tag.outputs.image_tag }}"
+
           echo "Updated Helm Chart: ${{ matrix.values_file }}"
