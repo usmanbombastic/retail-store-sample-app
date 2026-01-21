@@ -7,6 +7,7 @@ on:
     paths:
       - 'src/**'
       - '.github/workflows/**'
+
   pull_request:
     branches:
       - main
@@ -15,23 +16,25 @@ on:
 
 env:
   AWS_REGION: us-west-2
-  AWS_ACCOUNT_ID: ${{ secrets.AWS_ACCOUNT_ID }}
 
 jobs:
   detect-changes:
     runs-on: ubuntu-latest
+
     outputs:
-      services-matrix: ${{ steps.generate-matrix.outputs.matrix }}
+      ui: ${{ steps.filter.outputs.ui }}
+      cart: ${{ steps.filter.outputs.cart }}
+      catalog: ${{ steps.filter.outputs.catalog }}
+      orders: ${{ steps.filter.outputs.orders }}
+      checkout: ${{ steps.filter.outputs.checkout }}
 
     steps:
-      - name: Checkout repository
+      - name: Checkout repo
         uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
 
-      - name: Check for service changes
-        uses: dorny/paths-filter@v3
+      - name: Detect changed services
         id: filter
+        uses: dorny/paths-filter@v3
         with:
           filters: |
             ui:
@@ -45,127 +48,57 @@ jobs:
             checkout:
               - 'src/checkout/**'
 
-     - name: Generate service matrix
-  id: generate-matrix
-  run: |
-    echo '{"include": [' > matrix.json
-
-    added=false
-
-    if [ "${{ steps.filter.outputs.ui }}" = "true" ]; then
-      echo '{"name":"ui","path":"src/ui","dockerfile":"src/ui/Dockerfile","ecr_repository":"retail-store/ui","helm_chart":"src/ui/chart","values_file":"src/ui/chart/values.yaml","image_key":".image.tag","build_type":"java-maven"}' >> matrix.json
-      added=true
-    fi
-
-    if [ "${{ steps.filter.outputs.cart }}" = "true" ]; then
-      if [ "$added" = true ]; then echo "," >> matrix.json; fi
-      echo '{"name":"cart","path":"src/cart","dockerfile":"src/cart/Dockerfile","ecr_repository":"retail-store/cart","helm_chart":"src/cart/chart","values_file":"src/cart/chart/values.yaml","image_key":".image.tag","build_type":"java-maven"}' >> matrix.json
-      added=true
-    fi
-
-    if [ "${{ steps.filter.outputs.catalog }}" = "true" ]; then
-      if [ "$added" = true ]; then echo "," >> matrix.json; fi
-      echo '{"name":"catalog","path":"src/catalog","dockerfile":"src/catalog/Dockerfile","ecr_repository":"retail-store/catalog","helm_chart":"src/catalog/chart","values_file":"src/catalog/chart/values.yaml","image_key":".image.tag","build_type":"go"}' >> matrix.json
-      added=true
-    fi
-
-    if [ "${{ steps.filter.outputs.orders }}" = "true" ]; then
-      if [ "$added" = true ]; then echo "," >> matrix.json; fi
-      echo '{"name":"orders","path":"src/orders","dockerfile":"src/orders/Dockerfile","ecr_repository":"retail-store/orders","helm_chart":"src/orders/chart","values_file":"src/orders/chart/values.yaml","image_key":".image.tag","build_type":"java-maven"}' >> matrix.json
-      added=true
-    fi
-
-    if [ "${{ steps.filter.outputs.checkout }}" = "true" ]; then
-      if [ "$added" = true ]; then echo "," >> matrix.json; fi
-      echo '{"name":"checkout","path":"src/checkout","dockerfile":"src/checkout/Dockerfile","ecr_repository":"retail-store/checkout","helm_chart":"src/checkout/chart","values_file":"src/checkout/chart/values.yaml","image_key":".image.tag","build_type":"nodejs-npm"}' >> matrix.json
-      added=true
-    fi
-
-    echo "]}" >> matrix.json
-
-    echo "matrix=$(cat matrix.json)" >> $GITHUB_OUTPUT
-    echo "Generated matrix:"
-    cat matrix.json
-
-
-  build-and-deploy:
+  build-ui:
     needs: detect-changes
+    if: needs.detect-changes.outputs.ui == 'true'
     runs-on: ubuntu-latest
-    if: needs.detect-changes.outputs.services-matrix != '{"include":[]}'
-    strategy:
-      matrix: ${{ fromJson(needs.detect-changes.outputs.services-matrix) }}
-      fail-fast: false
 
     steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
+      - uses: actions/checkout@v4
 
-      - name: Generate image tag
-        id: generate-tag
-        run: |
-          COMMIT_SHA=$(git rev-parse --short HEAD)
-          TIMESTAMP=$(date +%Y%m%d%H%M%S)
-          IMAGE_TAG="${COMMIT_SHA}-${TIMESTAMP}"
-          echo "image_tag=$IMAGE_TAG" >> $GITHUB_OUTPUT
+      - name: Build UI
+        run: echo "Building UI service"
 
-      - name: Configure AWS credentials
-        uses: aws-actions/configure-aws-credentials@v4
-        with:
-          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
-          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
-          aws-region: ${{ env.AWS_REGION }}
+  build-cart:
+    needs: detect-changes
+    if: needs.detect-changes.outputs.cart == 'true'
+    runs-on: ubuntu-latest
 
-      - name: Login to Amazon ECR
-        uses: aws-actions/amazon-ecr-login@v2
+    steps:
+      - uses: actions/checkout@v4
 
-      - name: Set up Java, Go, Node depending on service
-        run: |
-          if [ "${{ matrix.build_type }}" = "java-maven" ]; then
-            echo "Setting up Java..."
-            sudo apt-get update && sudo apt-get install -y maven openjdk-17-jdk
-          elif [ "${{ matrix.build_type }}" = "go" ]; then
-            echo "Setting up Go..."
-            sudo apt-get update && sudo apt-get install -y golang-go
-          elif [ "${{ matrix.build_type }}" = "nodejs-npm" ]; then
-            echo "Setting up Node.js..."
-            curl -fsSL https://deb.nodesource.com/setup_18.x | sudo -E bash -
-            sudo apt-get install -y nodejs
-          fi
+      - name: Build Cart
+        run: echo "Building Cart service"
 
-      - name: Build and push Docker image
-        uses: docker/build-push-action@v5
-        with:
-          context: ${{ matrix.path }}
-          file: ${{ matrix.dockerfile }}
-          push: true
-          tags: |
-            ${{ steps.login-ecr.outputs.registry }}/${{ matrix.ecr_repository }}:${{ steps.generate-tag.outputs.image_tag }}
-            ${{ steps.login-ecr.outputs.registry }}/${{ matrix.ecr_repository }}:latest
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
+  build-catalog:
+    needs: detect-changes
+    if: needs.detect-changes.outputs.catalog == 'true'
+    runs-on: ubuntu-latest
 
-      - name: Install yq
-        run: |
-          sudo wget -qO /usr/local/bin/yq https://github.com/mikefarah/yq/releases/latest/download/yq_linux_amd64
-          sudo chmod +x /usr/local/bin/yq
+    steps:
+      - uses: actions/checkout@v4
 
-      - name: Update Helm chart values
-        run: |
-          ECR_IMAGE="${{ steps.login-ecr.outputs.registry }}/${{ matrix.ecr_repository }}:${{ steps.generate-tag.outputs.image_tag }}"
-          yq eval '${{ matrix.image_key }} = "'$ECR_IMAGE'"' -i ${{ matrix.values_file }}
+      - name: Build Catalog
+        run: echo "Building Catalog service"
 
-      - name: Commit Helm chart updates
-        uses: stefanzweifel/git-auto-commit-action@v5
-        with:
-          commit_message: "chore(${{ matrix.name }}): update image tag to ${{ steps.generate-tag.outputs.image_tag }}"
-          file_pattern: ${{ matrix.values_file }}
-          commit_user_name: "github-actions[bot]"
-          commit_user_email: "github-actions[bot]@users.noreply.github.com"
-          commit_author: "github-actions[bot] <github-actions[bot]@users.noreply.github.com>"
+  build-orders:
+    needs: detect-changes
+    if: needs.detect-changes.outputs.orders == 'true'
+    runs-on: ubuntu-latest
 
-      - name: Output deployment information
-        run: |
-          echo "::notice title=Deployment Complete::Service '${{ matrix.name }}' deployed with image tag '${{ steps.generate-tag.outputs.image_tag }}'"
+    steps:
+      - uses: actions/checkout@v4
 
+      - name: Build Orders
+        run: echo "Building Orders service"
+
+  build-checkout:
+    needs: detect-changes
+    if: needs.detect-changes.outputs.checkout == 'true'
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build Checkout
+        run: echo "Building Checkout service"
