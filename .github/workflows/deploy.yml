@@ -6,99 +6,61 @@ on:
       - gitops
     paths:
       - 'src/**'
-      - '.github/workflows/**'
-
-  pull_request:
-    branches:
-      - main
-    paths:
-      - 'src/**'
 
 env:
   AWS_REGION: us-west-2
+  ECR_REPO: retail-store/ui
 
 jobs:
-  detect-changes:
+  deploy-ui:
     runs-on: ubuntu-latest
-
-    outputs:
-      ui: ${{ steps.filter.outputs.ui }}
-      cart: ${{ steps.filter.outputs.cart }}
-      catalog: ${{ steps.filter.outputs.catalog }}
-      orders: ${{ steps.filter.outputs.orders }}
-      checkout: ${{ steps.filter.outputs.checkout }}
 
     steps:
       - name: Checkout repo
         uses: actions/checkout@v4
 
-      - name: Detect changed services
-        id: filter
-        uses: dorny/paths-filter@v3
+      - name: Set image tag
+        id: tag
+        run: |
+          TAG=$(git rev-parse --short HEAD)
+          echo "IMAGE_TAG=$TAG" >> $GITHUB_ENV
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
         with:
-          filters: |
-            ui:
-              - 'src/ui/**'
-            cart:
-              - 'src/cart/**'
-            catalog:
-              - 'src/catalog/**'
-            orders:
-              - 'src/orders/**'
-            checkout:
-              - 'src/checkout/**'
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.AWS_REGION }}
 
-  build-ui:
-    needs: detect-changes
-    if: needs.detect-changes.outputs.ui == 'true'
-    runs-on: ubuntu-latest
+      - name: Login to Amazon ECR
+        uses: aws-actions/amazon-ecr-login@v2
 
-    steps:
-      - uses: actions/checkout@v4
+      - name: Build Docker image
+        run: |
+          docker build -t ui:${IMAGE_TAG} src/ui
 
-      - name: Build UI
-        run: echo "Building UI service"
+      - name: Tag Docker image
+        run: |
+          docker tag ui:${IMAGE_TAG} \
+          ${{ secrets.AWS_ACCOUNT_ID }}.dkr.ecr.${AWS_REGION}.amazonaws.com/${ECR_REPO}:${IMAGE_TAG}
 
-  build-cart:
-    needs: detect-changes
-    if: needs.detect-changes.outputs.cart == 'true'
-    runs-on: ubuntu-latest
+      - name: Push Docker image to ECR
+        run: |
+          docker push \
+          ${{ secrets.AWS_ACCOUNT_ID }}.dkr.ecr.${AWS_REGION}.amazonaws.com/${ECR_REPO}:${IMAGE_TAG}
 
-    steps:
-      - uses: actions/checkout@v4
+      - name: Update Helm values
+        run: |
+          sed -i "s/tag:.*/tag: ${IMAGE_TAG}/" src/ui/chart/values.yaml
 
-      - name: Build Cart
-        run: echo "Building Cart service"
+      - name: Commit Helm changes
+        run: |
+          git config user.name "github-actions"
+          git config user.email "github-actions@github.com"
+          git add src/ui/chart/values.yaml
+          git commit -m "chore(ui): update image tag ${IMAGE_TAG}" || echo "No changes"
+          git push origin gitops
 
-  build-catalog:
-    needs: detect-changes
-    if: needs.detect-changes.outputs.catalog == 'true'
-    runs-on: ubuntu-latest
-
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Build Catalog
-        run: echo "Building Catalog service"
-
-  build-orders:
-    needs: detect-changes
-    if: needs.detect-changes.outputs.orders == 'true'
-    runs-on: ubuntu-latest
-
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Build Orders
-        run: echo "Building Orders service"
-
-  build-checkout:
-    needs: detect-changes
-    if: needs.detect-changes.outputs.checkout == 'true'
-    runs-on: ubuntu-latest
-
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Build Checkout
-        run: echo "Building Checkout service"
+      - name: Done
+        run: |
+          echo "UI deployed successfully with tag ${IMAGE_TAG}"
