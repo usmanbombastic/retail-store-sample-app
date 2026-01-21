@@ -45,45 +45,48 @@ jobs:
             checkout:
               - 'src/checkout/**'
 
-      - name: Generate service matrix
-        id: generate-matrix
-        run: |
-          echo "matrix=" >> $GITHUB_OUTPUT
-          echo '{"include": [' > matrix.json
+     - name: Generate service matrix
+  id: generate-matrix
+  run: |
+    echo '{"include": [' > matrix.json
 
-          first=true
-          for service in ui cart catalog orders checkout; do
-            changed=${{ steps.filter.outputs[service] }}
-            if [ "$changed" = "true" ]; then
-              if [ "$first" = "true" ]; then
-                first=false
-              else
-                echo "," >> matrix.json
-              fi
-              case $service in
-                ui)
-                  echo '{"name":"ui","path":"src/ui","dockerfile":"src/ui/Dockerfile","ecr_repository":"retail-store/ui","helm_chart":"src/ui/chart","values_file":"src/ui/chart/values.yaml","image_key":".image.tag","build_type":"java-maven"}' >> matrix.json
-                  ;;
-                cart)
-                  echo '{"name":"cart","path":"src/cart","dockerfile":"src/cart/Dockerfile","ecr_repository":"retail-store/cart","helm_chart":"src/cart/chart","values_file":"src/cart/chart/values.yaml","image_key":".image.tag","build_type":"java-maven"}' >> matrix.json
-                  ;;
-                catalog)
-                  echo '{"name":"catalog","path":"src/catalog","dockerfile":"src/catalog/Dockerfile","ecr_repository":"retail-store/catalog","helm_chart":"src/catalog/chart","values_file":"src/catalog/chart/values.yaml","image_key":".image.tag","build_type":"go"}' >> matrix.json
-                  ;;
-                orders)
-                  echo '{"name":"orders","path":"src/orders","dockerfile":"src/orders/Dockerfile","ecr_repository":"retail-store/orders","helm_chart":"src/orders/chart","values_file":"src/orders/chart/values.yaml","image_key":".image.tag","build_type":"java-maven"}' >> matrix.json
-                  ;;
-                checkout)
-                  echo '{"name":"checkout","path":"src/checkout","dockerfile":"src/checkout/Dockerfile","ecr_repository":"retail-store/checkout","helm_chart":"src/checkout/chart","values_file":"src/checkout/chart/values.yaml","image_key":".image.tag","build_type":"nodejs-npm"}' >> matrix.json
-                  ;;
-              esac
-            fi
-          done
+    added=false
 
-          echo "]}" >> matrix.json
-          echo "matrix=$(cat matrix.json)" >> $GITHUB_OUTPUT
-          echo "Generated service matrix:"
-          cat matrix.json
+    if [ "${{ steps.filter.outputs.ui }}" = "true" ]; then
+      echo '{"name":"ui","path":"src/ui","dockerfile":"src/ui/Dockerfile","ecr_repository":"retail-store/ui","helm_chart":"src/ui/chart","values_file":"src/ui/chart/values.yaml","image_key":".image.tag","build_type":"java-maven"}' >> matrix.json
+      added=true
+    fi
+
+    if [ "${{ steps.filter.outputs.cart }}" = "true" ]; then
+      if [ "$added" = true ]; then echo "," >> matrix.json; fi
+      echo '{"name":"cart","path":"src/cart","dockerfile":"src/cart/Dockerfile","ecr_repository":"retail-store/cart","helm_chart":"src/cart/chart","values_file":"src/cart/chart/values.yaml","image_key":".image.tag","build_type":"java-maven"}' >> matrix.json
+      added=true
+    fi
+
+    if [ "${{ steps.filter.outputs.catalog }}" = "true" ]; then
+      if [ "$added" = true ]; then echo "," >> matrix.json; fi
+      echo '{"name":"catalog","path":"src/catalog","dockerfile":"src/catalog/Dockerfile","ecr_repository":"retail-store/catalog","helm_chart":"src/catalog/chart","values_file":"src/catalog/chart/values.yaml","image_key":".image.tag","build_type":"go"}' >> matrix.json
+      added=true
+    fi
+
+    if [ "${{ steps.filter.outputs.orders }}" = "true" ]; then
+      if [ "$added" = true ]; then echo "," >> matrix.json; fi
+      echo '{"name":"orders","path":"src/orders","dockerfile":"src/orders/Dockerfile","ecr_repository":"retail-store/orders","helm_chart":"src/orders/chart","values_file":"src/orders/chart/values.yaml","image_key":".image.tag","build_type":"java-maven"}' >> matrix.json
+      added=true
+    fi
+
+    if [ "${{ steps.filter.outputs.checkout }}" = "true" ]; then
+      if [ "$added" = true ]; then echo "," >> matrix.json; fi
+      echo '{"name":"checkout","path":"src/checkout","dockerfile":"src/checkout/Dockerfile","ecr_repository":"retail-store/checkout","helm_chart":"src/checkout/chart","values_file":"src/checkout/chart/values.yaml","image_key":".image.tag","build_type":"nodejs-npm"}' >> matrix.json
+      added=true
+    fi
+
+    echo "]}" >> matrix.json
+
+    echo "matrix=$(cat matrix.json)" >> $GITHUB_OUTPUT
+    echo "Generated matrix:"
+    cat matrix.json
+
 
   build-and-deploy:
     needs: detect-changes
@@ -165,3 +168,4 @@ jobs:
       - name: Output deployment information
         run: |
           echo "::notice title=Deployment Complete::Service '${{ matrix.name }}' deployed with image tag '${{ steps.generate-tag.outputs.image_tag }}'"
+
