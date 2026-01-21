@@ -1,0 +1,184 @@
+name: Deploy Pipeline
+
+on:
+  push:
+    branches:
+      - [gitops]
+    paths:
+      - 'src/**'
+  pull_request:
+    branches:
+      - main
+    paths:
+      - 'src/**'
+
+env:
+  AWS_REGION: us-west-2
+  AWS_ACCOUNT_ID: ${{ secrets.AWS_ACCOUNT_ID }}
+
+jobs:
+  # Detect which services have changed
+  detect-changes:
+    runs-on: ubuntu-latest
+    outputs:
+      ui: ${{ steps.filter.outputs.ui }}
+      cart: ${{ steps.filter.outputs.cart }}
+      catalog: ${{ steps.filter.outputs.catalog }}
+      orders: ${{ steps.filter.outputs.orders }}
+      checkout: ${{ steps.filter.outputs.checkout }}
+      any-service: ${{ steps.filter.outputs.ui == 'true' || steps.filter.outputs.cart == 'true' || steps.filter.outputs.catalog == 'true' || steps.filter.outputs.orders == 'true' || steps.filter.outputs.checkout == 'true' }}
+      services-matrix: ${{ steps.generate-matrix.outputs.matrix }}
+    
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      
+      - name: Check for service changes
+        uses: dorny/paths-filter@v3
+        id: filter
+        with:
+          filters: |
+            ui:
+              - 'src/ui/**'
+            cart:
+              - 'src/cart/**'
+            catalog:
+              - 'src/catalog/**'
+            orders:
+              - 'src/orders/**'
+            checkout:
+              - 'src/checkout/**'
+      
+      - name: Generate service matrix
+        id: generate-matrix
+        run: |
+          services=()
+          
+          if [[ "${{ steps.filter.outputs.ui }}" == "true" ]]; then
+            services+=('{"name":"ui","path":"src/ui","dockerfile":"src/ui/Dockerfile","ecr_repository":"retail-store/ui","helm_chart":"src/ui/chart","values_file":"src/ui/chart/values.yaml","image_key":".image.tag","build_type":"java-maven"}')
+          fi
+          
+          if [[ "${{ steps.filter.outputs.cart }}" == "true" ]]; then
+            services+=('{"name":"cart","path":"src/cart","dockerfile":"src/cart/Dockerfile","ecr_repository":"retail-store/cart","helm_chart":"src/cart/chart","values_file":"src/cart/chart/values.yaml","image_key":".image.tag","build_type":"java-maven"}')
+          fi
+          
+          if [[ "${{ steps.filter.outputs.catalog }}" == "true" ]]; then
+            services+=('{"name":"catalog","path":"src/catalog","dockerfile":"src/catalog/Dockerfile","ecr_repository":"retail-store/catalog","helm_chart":"src/catalog/chart","values_file":"src/catalog/chart/values.yaml","image_key":".image.tag","build_type":"go"}')
+          fi
+          
+          if [[ "${{ steps.filter.outputs.orders }}" == "true" ]]; then
+            services+=('{"name":"orders","path":"src/orders","dockerfile":"src/orders/Dockerfile","ecr_repository":"retail-store/orders","helm_chart":"src/orders/chart","values_file":"src/orders/chart/values.yaml","image_key":".image.tag","build_type":"java-maven"}')
+          fi
+          
+          if [[ "${{ steps.filter.outputs.checkout }}" == "true" ]]; then
+            services+=('{"name":"checkout","path":"src/checkout","dockerfile":"src/checkout/Dockerfile","ecr_repository":"retail-store/checkout","helm_chart":"src/checkout/chart","values_file":"src/checkout/chart/values.yaml","image_key":".image.tag","build_type":"nodejs-npm"}')
+          fi
+          
+          if [ ${#services[@]} -eq 0 ]; then
+            echo "matrix={\"include\":[]}" >> $GITHUB_OUTPUT
+          else
+            matrix_json=$(printf '%s\n' "${services[@]}" | jq -s '{"include": .}')
+            echo "matrix=$matrix_json" >> $GITHUB_OUTPUT
+          fi
+          
+          echo "Generated matrix for services: ${services[*]}"
+
+  # Build and deploy services
+  build-and-deploy:
+    needs: detect-changes
+    if: needs.detect-changes.outputs.any-service == 'true'
+    runs-on: ubuntu-latest
+    strategy:
+      matrix: ${{ fromJson(needs.detect-changes.outputs.services-matrix) }}
+      fail-fast: false
+    
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      
+      - name: Generate image tag
+        id: generate-tag
+        run: |
+          COMMIT_SHA=$(git rev-parse --short HEAD)
+          TIMESTAMP=$(date +%Y%m%d%H%M%S)
+          IMAGE_TAG="${COMMIT_SHA}-${TIMESTAMP}"
+          echo "image_tag=$IMAGE_TAG" >> $GITHUB_OUTPUT
+          echo "Generated image tag: $IMAGE_TAG"
+      
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.AWS_REGION }}
+      
+      - name: Login to Amazon ECR
+        id: login-ecr
+        uses: aws-actions/amazon-ecr-login@v2
+        with:
+          mask-password: 'true'
+      
+      - name: Set up build environment for Java/Maven services
+        if: matrix.build_type == 'java-maven'
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'corretto'
+          java-version: '17'
+          cache: 'maven'
+      
+      - name: Set up build environment for Go service
+        if: matrix.build_type == 'go'
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.21'
+          cache-dependency-path: ${{ matrix.path }}/go.sum
+      
+      - name: Set up build environment for Node.js service
+        if: matrix.build_type == 'nodejs-npm'
+        uses: actions/setup-node@v4
+        with:
+          node-version: '18'
+          cache: 'npm'
+          cache-dependency-path: ${{ matrix.path }}/package-lock.json
+      
+      - name: Build and push Docker image
+        uses: docker/build-push-action@v5
+        with:
+          context: ${{ matrix.path }}
+          file: ${{ matrix.dockerfile }}
+          push: true
+          tags: |
+            ${{ steps.login-ecr.outputs.registry }}/${{ matrix.ecr_repository }}:${{ steps.generate-tag.outputs.image_tag }}
+            ${{ steps.login-ecr.outputs.registry }}/${{ matrix.ecr_repository }}:latest
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+      
+      - name: Install yq for YAML processing
+        run: |
+          sudo wget -qO /usr/local/bin/yq https://github.com/mikefarah/yq/releases/latest/download/yq_linux_amd64
+          sudo chmod +x /usr/local/bin/yq
+      
+      - name: Update Helm chart values
+        run: |
+          ECR_IMAGE="${{ steps.login-ecr.outputs.registry }}/${{ matrix.ecr_repository }}:${{ steps.generate-tag.outputs.image_tag }}"
+          yq eval '${{ matrix.image_key }} = "'$ECR_IMAGE'"' -i ${{ matrix.values_file }}
+          echo "Updated ${{ matrix.values_file }} with image: $ECR_IMAGE"
+      
+      - name: Commit Helm chart updates
+        uses: stefanzweifel/git-auto-commit-action@v5
+        with:
+          commit_message: "chore(${{ matrix.name }}): update image tag to ${{ steps.generate-tag.outputs.image_tag }}"
+          file_pattern: ${{ matrix.values_file }}
+          commit_user_name: "github-actions[bot]"
+          commit_user_email: "github-actions[bot]@users.noreply.github.com"
+          commit_author: "github-actions[bot] <github-actions[bot]@users.noreply.github.com>"
+      
+      - name: Output deployment information
+        run: |
+          echo "::notice title=Deployment Complete::Service '${{ matrix.name }}' deployed with image tag '${{ steps.generate-tag.outputs.image_tag }}'"
+          echo "ECR Image: ${{ steps.login-ecr.outputs.registry }}/${{ matrix.ecr_repository }}:${{ steps.generate-tag.outputs.image_tag }}"
+          echo "Updated Helm Chart: ${{ matrix.values_file }}"
