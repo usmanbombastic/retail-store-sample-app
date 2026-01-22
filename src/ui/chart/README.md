@@ -1,6 +1,6 @@
 # UI Helm Chart
 
-This Helm chart deploys the UI component of the application.
+This Helm chart deploys the UI component of the application. 
 
 ## Installation
 
