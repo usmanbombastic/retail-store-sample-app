@@ -3,7 +3,7 @@ name: Deploy Pipeline
 on:
   push:
     branches:
-      - main
+      - gitops
     paths:
       - "src/ui/**"
       - ".github/workflows/deploy.yml"
@@ -80,3 +80,4 @@ jobs:
       - name: Done
         run: |
           echo "UI deployed successfully with tag ${IMAGE_TAG}"
+
