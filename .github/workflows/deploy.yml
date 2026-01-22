@@ -3,28 +3,33 @@ name: Deploy Pipeline
 on:
   push:
     branches:
-      - gitops
+      - main
     paths:
-      - 'src/**'
+      - "src/ui/**"
+      - ".github/workflows/deploy.yml"
 
 env:
   AWS_REGION: us-west-2
   ECR_REPO: retail-store/ui
+  VALUES_FILE: src/ui/chart/values.yaml
 
 jobs:
   deploy-ui:
     runs-on: ubuntu-latest
 
     steps:
+      # 1️⃣ Checkout application code
       - name: Checkout repo
         uses: actions/checkout@v4
 
+      # 2️⃣ Generate image tag
       - name: Set image tag
         id: tag
         run: |
           TAG=$(git rev-parse --short HEAD)
           echo "IMAGE_TAG=$TAG" >> $GITHUB_ENV
 
+      # 3️⃣ Configure AWS credentials
       - name: Configure AWS credentials
         uses: aws-actions/configure-aws-credentials@v4
         with:
@@ -32,35 +37,46 @@ jobs:
           aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
           aws-region: ${{ env.AWS_REGION }}
 
+      # 4️⃣ Login to Amazon ECR
       - name: Login to Amazon ECR
+        id: login-ecr
         uses: aws-actions/amazon-ecr-login@v2
 
-      - name: Build Docker image
+      # 5️⃣ Build & push Docker image
+      - name: Build and push Docker image
         run: |
-          docker build -t ui:${IMAGE_TAG} src/ui
+          IMAGE_URI="${{ steps.login-ecr.outputs.registry }}/${{ env.ECR_REPO }}:${IMAGE_TAG}"
 
-      - name: Tag Docker image
+          docker build -t $IMAGE_URI src/ui
+          docker push $IMAGE_URI
+
+      # 6️⃣ Install yq (SAFE YAML editing)
+      - name: Install yq
         run: |
-          docker tag ui:${IMAGE_TAG} \
-          ${{ secrets.AWS_ACCOUNT_ID }}.dkr.ecr.${AWS_REGION}.amazonaws.com/${ECR_REPO}:${IMAGE_TAG}
+          sudo wget https://github.com/mikefarah/yq/releases/latest/download/yq_linux_amd64 -O /usr/bin/yq
+          sudo chmod +x /usr/bin/yq
 
-      - name: Push Docker image to ECR
-        run: |
-          docker push \
-          ${{ secrets.AWS_ACCOUNT_ID }}.dkr.ecr.${AWS_REGION}.amazonaws.com/${ECR_REPO}:${IMAGE_TAG}
-
+      # 7️⃣ Update Helm values.yaml (repo + tag)
       - name: Update Helm values
         run: |
-          sed -i "s/tag:.*/tag: ${IMAGE_TAG}/" src/ui/chart/values.yaml
+          yq eval '.image.repository = "${{ steps.login-ecr.outputs.registry }}/${{ env.ECR_REPO }}"' -i ${{ env.VALUES_FILE }}
+          yq eval '.image.tag = env(IMAGE_TAG)' -i ${{ env.VALUES_FILE }}
 
+          echo "Updated values.yaml:"
+          cat ${{ env.VALUES_FILE }}
+
+      # 8️⃣ Commit Helm changes to gitops branch
       - name: Commit Helm changes
         run: |
           git config user.name "github-actions"
           git config user.email "github-actions@github.com"
-          git add src/ui/chart/values.yaml
-          git commit -m "chore(ui): update image tag ${IMAGE_TAG}" || echo "No changes"
+
+          git checkout gitops
+          git add ${{ env.VALUES_FILE }}
+          git commit -m "chore(ui): update image ${IMAGE_TAG}" || echo "No changes"
           git push origin gitops
 
+      # 9️⃣ Done
       - name: Done
         run: |
           echo "UI deployed successfully with tag ${IMAGE_TAG}"
