@@ -6,7 +6,7 @@ replicaCount: 1
 image:
   repository: 485098662704.dkr.ecr.us-west-2.amazonaws.com/retail-store/ui
   pullPolicy: Always
-  tag: 81a6331
+  tag: 0f65932
 imagePullSecrets:
   - name: regcred
 nameOverride: ""
